@@ -14,6 +14,7 @@
     <li class="nav-item"><button class="nav-link active" data-step="scope">1. Scope</button></li>
     <li class="nav-item"><button class="nav-link" data-step="research">2. Research</button></li>
     <li class="nav-item"><button class="nav-link" data-step="result">3. Result</button></li>
+    <li class="nav-item"><button class="nav-link" data-step="settings">Settings</button></li>
   </ul>
   <div class="progress mb-3"><div id="progress" class="progress-bar" style="width:0%"></div></div>
 
@@ -38,6 +39,57 @@
     <div id="report" class="card card-body"></div>
     <details class="mt-2"><summary>Raw markdown</summary><pre id="report-raw"></pre></details>
   </section>
+
+  <section id="panel-settings" class="d-none">
+    <h5>Models per node <small class="text-muted fs-6">— <a href="https://openrouter.ai/models" target="_blank" rel="noopener">browse model ids on openrouter.ai/models</a></small></h5>
+    <div class="row g-2 mb-3">
+      <div class="col-md-6"><label class="form-label small mb-0" for="scope_model">Scope</label><input id="scope_model" class="form-control form-control-sm" placeholder="e.g. liquid/lfm-2.5-2.6b:free" /></div>
+      <div class="col-md-6"><label class="form-label small mb-0" for="research_model">Research</label><input id="research_model" class="form-control form-control-sm" /></div>
+      <div class="col-md-6"><label class="form-label small mb-0" for="supervisor_model">Supervisor</label><input id="supervisor_model" class="form-control form-control-sm" /></div>
+      <div class="col-md-6"><label class="form-label small mb-0" for="summary_model">Summary</label><input id="summary_model" class="form-control form-control-sm" /></div>
+      <div class="col-md-6"><label class="form-label small mb-0" for="compress_model">Compress</label><input id="compress_model" class="form-control form-control-sm" /></div>
+      <div class="col-md-6"><label class="form-label small mb-0" for="writer_model">Writer</label><input id="writer_model" class="form-control form-control-sm" /></div>
+    </div>
+
+    <br><hr/>
+    <h5>Research depth &amp; limits</h5>
+    <div class="row g-2 mb-3">
+      <div class="col-md-3"><label class="form-label small mb-0" for="model_timeout">Model timeout (s)</label><input id="model_timeout" type="number" min="0" step="1" class="form-control form-control-sm" placeholder="blank = none" /></div>
+      <div class="col-md-3"><label class="form-label small mb-0" for="max_tool_iterations">Max tool iterations</label><input id="max_tool_iterations" type="number" min="1" step="1" class="form-control form-control-sm" /></div>
+      <div class="col-md-3"><label class="form-label small mb-0" for="max_researcher_iterations">Max researcher iterations</label><input id="max_researcher_iterations" type="number" min="1" step="1" class="form-control form-control-sm" /></div>
+      <div class="col-md-3"><label class="form-label small mb-0" for="max_concurrent_researchers">Max concurrent researchers</label><input id="max_concurrent_researchers" type="number" min="1" step="1" class="form-control form-control-sm" /></div>
+      <div class="col-md-3"><label class="form-label small mb-0" for="rate_limit_rpm">Rate limit (RPM, 0 = off)</label><input id="rate_limit_rpm" type="number" min="0" step="1" class="form-control form-control-sm" /></div>
+    </div>
+
+    <br><hr/>
+    <h5>Tavily search</h5>
+    <div class="row g-2 mb-3 align-items-end">
+      <div class="col-md-3"><label class="form-label small mb-0" for="tavily_max_results">Max results / query</label><input id="tavily_max_results" type="number" min="1" step="1" class="form-control form-control-sm" /></div>
+      <div class="col-md-3"><label class="form-label small mb-0" for="tavily_search_depth">Search depth</label><select id="tavily_search_depth" class="form-select form-select-sm"><option value="basic">basic</option><option value="advanced">advanced</option></select></div>
+      <div class="col-md-6"><div class="form-check"><input id="tavily_include_raw" type="checkbox" class="form-check-input" /><label class="form-check-label small" for="tavily_include_raw">Include raw content (adds per-page summary LLM calls)</label></div></div>
+    </div>
+
+    <br><hr/>
+    <h5>OpenRouter API Key</h5>
+    <div class="row g-2 mb-3">
+      <div class="col-md-6">
+        <label class="form-label small mb-0" for="openrouter_api_key">API key</label>
+        <input id="openrouter_api_key" type="password" autocomplete="off" class="form-control form-control-sm" placeholder="sk-or-… (leave blank to keep current)" />
+        <div class="form-text">Stored locally in <code>.secrets.json</code>; never shown again.</div>
+      </div>
+      <div class="col-md-6 d-flex align-items-end"><span id="openrouter-key-status" class="small text-muted"></span></div>
+    </div>
+
+    <button id="btn-save-settings" class="btn btn-primary btn-sm">Save settings</button>
+    <button id="btn-reload-settings" class="btn btn-outline-secondary btn-sm">Reload</button>
+    <div id="settings-status" class="mt-2 small"></div>
+    <p class="text-muted small mt-2 mb-0">Saved to <code>settings.json</code> and applied to the next run.</p>
+  </section>
+
+  <footer class="mt-5 pt-4 border-top text-center text-muted small">
+    <p class="mb-1">Deep Research — local, single-user.</p>
+    <p class="mb-0">Models via <a href="https://openrouter.ai/models" target="_blank" rel="noopener">OpenRouter</a> · search via <a href="https://tavily.com" target="_blank" rel="noopener">Tavily</a></p>
+  </footer>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
 <script src="/app.js"></script>

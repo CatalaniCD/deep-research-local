@@ -36,6 +36,12 @@ class AsyncRateLimiter:
         self._times: deque[float] = deque()
         self._lock = asyncio.Lock()
 
+    def set_rpm(self, rpm: float) -> None:
+        """Update the budget live (called when Settings change). <=0 disables."""
+        if rpm != self.rpm:
+            logger.info("ratelimit=reconfigure rpm=%s -> %s", self.rpm, rpm)
+            self.rpm = rpm
+
     async def acquire(self) -> float:
         """Block until a slot is free. Returns seconds waited (0 if immediate)."""
         if self.rpm <= 0:

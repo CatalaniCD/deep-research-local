@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from typing import Literal
 
 from langchain_core.messages import (
@@ -34,8 +33,9 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
 from .log_config import kv, timed
-from .models import describe, init_model
+from .models import get_model
 from .rate_limit import limiter
+from .settings import get_settings
 from .prompts import (
     clarify_with_user_instructions,
     compress_research_human_message,
@@ -63,37 +63,12 @@ logger = logging.getLogger("deep_research.graph")
 
 # ===== CONFIGURATION =====
 
-# Researcher tool-call iterations (think_tool + tavily_search) before forcing compress.
-max_tool_iterations = int(os.getenv("MAX_TOOL_ITERATIONS", "4"))
-# Supervisor ConductResearch iterations before forcing completion.
-max_researcher_iterations = int(os.getenv("MAX_RESEARCHER_ITERATIONS", "4"))
-# Parallel researcher sub-agents the supervisor may launch per round.
-max_concurrent_researchers = int(os.getenv("MAX_CONCURRENT_RESEARCHERS", "2"))
+# Models, timeout, caps, rate limit and Tavily params are read live from
+# deep_research.settings at call time (see graph + utils nodes), so edits made in
+# the UI Settings panel apply to the next run without a restart.
 
-# ===== MODELS (single factory; no hardcoded init_chat_model) =====
-
-scope_model = init_model("scope")
-research_model = init_model("research")
-research_model_with_tools = research_model.bind_tools([tavily_search, think_tool])
-compress_model = init_model("compress")
-supervisor_model = init_model("supervisor")
-supervisor_model_with_tools = supervisor_model.bind_tools(
-    [ConductResearch, ResearchComplete, think_tool]
-)
-writer_model = init_model("writer")
-
-logger.info("graph=build models=%s caps=%s", kv(
-    scope=describe(scope_model),
-    research=describe(research_model),
-    compress=describe(compress_model),
-    supervisor=describe(supervisor_model),
-    writer=describe(writer_model),
-), kv(
-    max_tool_iterations=max_tool_iterations,
-    max_researcher_iterations=max_researcher_iterations,
-    max_concurrent_researchers=max_concurrent_researchers,
-    rate_limit_rpm=limiter.rpm,
-))
+# Models come from the shared factory (models.get_model), never hardcoded here.
+logger.info("graph=build settings=%s", kv(**get_settings().to_dict()))
 
 # ===== SESSION STORE (checkpointer) =====
 
@@ -113,7 +88,7 @@ async def clarify_with_user(
 ) -> Command[Literal["write_research_brief", "__end__"]]:
     """Decide whether to ask a clarifying question or proceed to the brief."""
     message_count = len(state.get("messages", []))
-    structured_output_model = scope_model.with_structured_output(ClarifyWithUser)
+    structured_output_model = get_model("scope").with_structured_output(ClarifyWithUser)
     await limiter.acquire()
     with timed(logger, "node=clarify_with_user", messages=message_count):
         response = await structured_output_model.ainvoke([
@@ -139,7 +114,7 @@ async def clarify_with_user(
 async def write_research_brief(state: AgentState) -> dict:
     """Turn the conversation into a concrete research brief for the supervisor."""
     message_count = len(state.get("messages", []))
-    structured_output_model = scope_model.with_structured_output(ResearchQuestion)
+    structured_output_model = get_model("scope").with_structured_output(ResearchQuestion)
     await limiter.acquire()
     with timed(logger, "node=write_research_brief", messages=message_count):
         response = await structured_output_model.ainvoke([
@@ -177,7 +152,7 @@ async def llm_call(state: ResearcherState) -> dict:
     await limiter.acquire()
     with timed(logger, "node=llm_call", iteration=iteration,
                messages=len(state.get("researcher_messages", []))):
-        response = await research_model_with_tools.ainvoke(
+        response = await get_model("research").bind_tools(tools).ainvoke(
             [SystemMessage(content=research_agent_prompt.format(date=get_today_str()))]
             + state["researcher_messages"]
         )
@@ -217,7 +192,7 @@ async def tool_node(state: ResearcherState) -> dict:
 def should_continue(state: ResearcherState) -> Literal["tool_node", "compress_research"]:
     """Continue the search loop, or compress once the budget/answer is reached."""
     iterations = state.get("tool_call_iterations", 0)
-    if iterations >= max_tool_iterations:
+    if iterations >= get_settings().max_tool_iterations:
         logger.info("route=researcher next=compress_research reason=max_tool_iterations iterations=%d", iterations)
         return "compress_research"
     if state["researcher_messages"][-1].tool_calls:
@@ -237,7 +212,7 @@ async def compress_research(state: ResearcherState) -> dict:
     await limiter.acquire()
     with timed(logger, "node=compress_research", topic=state.get("research_topic", ""),
                messages=len(messages)):
-        response = await compress_model.ainvoke(
+        response = await get_model("compress").ainvoke(
             [SystemMessage(content=system_message)] + list(messages) + [HumanMessage(content=human_message)]
         )
     raw_notes = [
@@ -281,12 +256,13 @@ async def supervisor(state: SupervisorState) -> Command[Literal["supervisor_tool
     iteration = state.get("research_iterations", 0) + 1
     system_message = lead_researcher_prompt.format(
         date=get_today_str(),
-        max_concurrent_research_units=max_concurrent_researchers,
-        max_researcher_iterations=max_researcher_iterations,
+        max_concurrent_research_units=get_settings().max_concurrent_researchers,
+        max_researcher_iterations=get_settings().max_researcher_iterations,
     )
     await limiter.acquire()
     with timed(logger, "node=supervisor", iteration=iteration, messages=len(supervisor_messages)):
-        response = await supervisor_model_with_tools.ainvoke(
+        response = await get_model("supervisor").bind_tools(
+            [ConductResearch, ResearchComplete, think_tool]).ainvoke(
             [SystemMessage(content=system_message)] + supervisor_messages
         )
     tool_calls = [tc["name"] for tc in (response.tool_calls or [])]
@@ -320,7 +296,7 @@ async def supervisor_tools(
     next_step = "supervisor"
     should_end = False
 
-    exceeded_iterations = research_iterations >= max_researcher_iterations
+    exceeded_iterations = research_iterations >= get_settings().max_researcher_iterations
     no_tool_calls = not most_recent_message.tool_calls
     research_complete = any(
         tool_call["name"] == "ResearchComplete"
@@ -426,7 +402,7 @@ async def final_report_generation(state: AgentState) -> dict:
     await limiter.acquire()
     with timed(logger, "node=final_report_generation", notes=len(notes),
                findings_chars=len("\n".join(notes))):
-        final_report = await writer_model.ainvoke([HumanMessage(content=final_report_prompt)])
+        final_report = await get_model("writer").ainvoke([HumanMessage(content=final_report_prompt)])
     logger.info("node=final_report_generation report_chars=%d", len(str(final_report.content or "")))
     return {
         "final_report": final_report.content,

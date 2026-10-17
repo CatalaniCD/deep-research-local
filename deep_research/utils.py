@@ -22,7 +22,8 @@ from .log_config import kv, timed
 from .rate_limit import limiter
 from .state_research import Summary
 from .prompts import summarize_webpage_prompt
-from .models import init_model
+from .models import get_model
+from .settings import get_settings
 
 logger = logging.getLogger("deep_research.utils")
 
@@ -47,7 +48,6 @@ def get_current_dir() -> Path:
 
 # ===== CONFIGURATION =====
 
-summarization_model = init_model("summary")
 tavily_client = AsyncTavilyClient()
 
 # ===== SEARCH FUNCTIONS =====
@@ -57,6 +57,7 @@ async def tavily_search_multiple(
     max_results: int = 3,
     topic: Literal["general", "news", "finance"] = "general",
     include_raw_content: bool = True,
+    search_depth: str = "basic",
 ) -> List[dict]:
     """Perform search using Tavily API for multiple queries in parallel.
 
@@ -65,12 +66,13 @@ async def tavily_search_multiple(
         max_results: Maximum number of results per query
         topic: Topic filter for search results
         include_raw_content: Whether to include raw webpage content
+        search_depth: Tavily depth ("basic" | "advanced")
 
     Returns:
         List of search result dictionaries (input order preserved)
     """
-    logger.debug("tool=tavily_search queries=%d max_results=%d topic=%s raw=%s",
-                 len(search_queries), max_results, topic, include_raw_content)
+    logger.debug("tool=tavily_search queries=%d max_results=%d topic=%s raw=%s depth=%s",
+                 len(search_queries), max_results, topic, include_raw_content, search_depth)
     with timed(logger, "tool=tavily_search_multiple", queries=len(search_queries), topic=topic):
         responses = list(await asyncio.gather(*[
             tavily_client.search(
@@ -78,6 +80,7 @@ async def tavily_search_multiple(
                 max_results=max_results,
                 include_raw_content=include_raw_content,
                 topic=topic,
+                search_depth=search_depth,
             )
             for query in search_queries
         ]))
@@ -96,7 +99,7 @@ async def summarize_webpage_content(webpage_content: str) -> str:
     """
     try:
         # Set up structured output model for summarization
-        structured_model = summarization_model.with_structured_output(Summary)
+        structured_model = get_model("summary").with_structured_output(Summary)
 
         # Generate summary
         await limiter.acquire()
@@ -197,7 +200,7 @@ def format_search_output(summarized_results: dict) -> str:
 @tool(parse_docstring=True)
 async def tavily_search(
     query: str,
-    max_results: Annotated[int, InjectedToolArg] = 3,
+    max_results: Annotated[int | None, InjectedToolArg] = None,
     topic: Annotated[Literal["general", "news", "finance"], InjectedToolArg] = "general",
 ) -> str:
     """Fetch results from Tavily search API with content summarization.
@@ -210,12 +213,14 @@ async def tavily_search(
     Returns:
         Formatted string of search results with summaries
     """
-    # Execute search for single query
+    # Execute search for single query using the current runtime settings.
+    settings = get_settings()
     search_results = await tavily_search_multiple(
         [query],  # Convert single query to list for the internal function
-        max_results=max_results,
+        max_results=max_results or settings.tavily_max_results,
         topic=topic,
-        include_raw_content=True,
+        include_raw_content=settings.tavily_include_raw,
+        search_depth=settings.tavily_search_depth,
     )
 
     # Deduplicate results by URL to avoid processing duplicate content

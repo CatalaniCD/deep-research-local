@@ -16,8 +16,10 @@
 - All nodes async; `deep_research/utils.py` uses `AsyncTavilyClient` + `ainvoke` so I/O never blocks the loop.
 - `deep_research/server.py` is transport-only (FastAPI :8000); `deep_research/cli.py` is the headless test path; `deep_research/jobs.py` is the in-memory job store; `ui/` Express proxies `/api/*` to :8000.
 - Logging via `deep_research/log_config.py` (`setup_logging`, `timed`, `kv`); nodes log `node=<name> start/done elapsed=...`. Never log keys.
+- Tunables live in `deep_research/settings.py` (single `Settings` singleton). Precedence: builtin defaults < env < `settings.json` < live `PUT /settings`. Nodes read `get_settings()` at call time; UI Settings panel edits apply next run, no restart.
 ## Models (OpenRouter)
-- All models via `models.init_model(role)`; `OPENROUTER_API_KEY` set -> `ChatOpenAI` at `OPENROUTER_BASE_URL` (default `https://openrouter.ai/api/v1`).
+- All models via `models.init_model(role)` / `models.get_model(role)`; `OPENROUTER_API_KEY` set -> `ChatOpenAI` at `OPENROUTER_BASE_URL` (default `https://openrouter.ai/api/v1`). `get_model` resolves from runtime `settings` at call time (cached by role+model+timeout); `clear_cache()` on credential change.
+- OpenRouter key editable via `PUT /settings` (`openrouter_api_key`); stored in `.secrets.json` (gitignored). NEVER returned by `GET /settings` (only `openrouter_key_set` bool) or logged.
 - Model pick: `RESEARCH/SUPERVISOR/SCOPE/SUMMARY/COMPRESS/WRITER_MODEL`, else `MODEL`, else builtin default. Never hardcode `init_chat_model(...)` in graph files.
 - Caps via env: `MAX_TOOL_ITERATIONS`, `MAX_RESEARCHER_ITERATIONS`, `MAX_CONCURRENT_RESEARCHERS`.
 - Outbound LLM calls are throttled by a shared `AsyncRateLimiter` (`RATE_LIMIT_RPM`, default 18); every model call awaits `limiter.acquire()` in `graph.py`/`utils.py`.

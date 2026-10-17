@@ -19,15 +19,12 @@ from pydantic import BaseModel
 
 from .jobs import create_job, get_job, update_job
 from .log_config import kv, setup_logging
-from .models import model_name_for
+from .settings import get_settings, openrouter_key_set, set_openrouter_api_key, update_settings
 
 # Configure logging before graph modules emit their build logs.
 setup_logging()
 
 from .graph import (  # noqa: E402
-    max_concurrent_researchers,
-    max_researcher_iterations,
-    max_tool_iterations,
     run_research,
     scope_research,
     thread_config,
@@ -38,20 +35,21 @@ logger = logging.getLogger("deep_research.api")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    s = get_settings()
     cfg = {
         "openrouter": bool(os.getenv("OPENROUTER_API_KEY")),
-        "models": {r: model_name_for(r) for r in ("supervisor", "research", "compress", "writer", "summary", "scope")},
-        "timeout": os.getenv("MODEL_TIMEOUT", "none"),
+        "models": {r: getattr(s, f"{r}_model") for r in ("supervisor", "research", "compress", "writer", "summary", "scope")},
+        "timeout": s.model_timeout,
         "caps": {
-            "tool": max_tool_iterations,
-            "supervisor": max_researcher_iterations,
-            "concurrent": max_concurrent_researchers,
+            "tool": s.max_tool_iterations,
+            "supervisor": s.max_researcher_iterations,
+            "concurrent": s.max_concurrent_researchers,
         },
+        "rate_limit_rpm": s.rate_limit_rpm,
         "tavily": {
-            "depth": os.getenv("TAVILY_SEARCH_DEPTH", "basic"),
-            "raw": os.getenv("TAVILY_INCLUDE_RAW", "false"),
-            "timeout": os.getenv("TAVILY_TIMEOUT", "30"),
-            "max_results": os.getenv("TAVILY_MAX_RESULTS", "3"),
+            "depth": s.tavily_search_depth,
+            "raw": s.tavily_include_raw,
+            "max_results": s.tavily_max_results,
             "key": bool(os.getenv("TAVILY_API_KEY")),
         },
     }
@@ -80,6 +78,35 @@ class ResearchRequest(BaseModel):
 @app.get("/health")
 def health() -> dict:
     return {"ok": True}
+
+
+def _settings_payload() -> dict:
+    """Public settings view; exposes only whether an API key is set, never its value."""
+    payload = get_settings().to_dict()
+    payload["openrouter_key_set"] = openrouter_key_set()
+    return payload
+
+
+@app.get("/settings")
+def read_settings() -> dict:
+    """Current runtime settings (models, timeout, caps, rate limit, Tavily)."""
+    return _settings_payload()
+
+
+@app.put("/settings")
+async def write_settings(payload: dict) -> dict:
+    """Partial update; persists to settings.json and applies live.
+
+    A non-empty ``openrouter_api_key`` updates the stored key (kept in
+    ``.secrets.json``); the value is never echoed back or logged.
+    """
+    api_key = payload.pop("openrouter_api_key", None)
+    if api_key:
+        set_openrouter_api_key(api_key)
+    update_settings(payload)
+    logger.info("api=settings update fields=%s key_updated=%s",
+                sorted(payload.keys()), bool(api_key))
+    return _settings_payload()
 
 
 @app.post("/scope")
@@ -147,8 +174,9 @@ async def start_research(req: ResearchRequest) -> dict:
         raise HTTPException(400, "research_brief required")
     job = create_job(req.research_brief)
     job_id = job["jobId"]
+    s = get_settings()
     logger.info("research_start job=%s brief_chars=%d models=%s", job_id, len(req.research_brief),
-                {r: model_name_for(r) for r in ("supervisor", "research", "compress", "writer", "summary", "scope")})
+                {r: getattr(s, f"{r}_model") for r in ("supervisor", "research", "compress", "writer", "summary", "scope")})
     task = asyncio.create_task(_run_research(job_id))
     _tasks[job_id] = task
     task.add_done_callback(lambda _t, jid=job_id: _tasks.pop(jid, None))

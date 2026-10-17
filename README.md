@@ -104,7 +104,16 @@ new session.
 
 ## Configuration
 
-All settings come from environment variables (see `.env.example`):
+Settings can be set via environment variables (see `.env.example`) or edited live
+in the UI **Settings** panel (`GET`/`PUT /api/settings`). Precedence is
+`builtin defaults < environment < settings.json < live UI edits`. Runtime edits
+persist to `settings.json` (gitignored) and apply to the next run without a
+restart (models are resolved per call via `models.get_model(role)`).
+
+The **OpenRouter API key** can also be set in the Settings panel. It is stored in
+`.secrets.json` (gitignored) as `OPENROUTER_API_KEY`, never returned by
+`GET /settings` (only an `openrouter_key_set` boolean) and never logged; changing
+it drops cached model clients so the new key applies immediately.
 
 | Variable | Purpose |
 | --- | --- |
@@ -124,11 +133,12 @@ All settings come from environment variables (see `.env.example`):
 ```
 deep_research/        # runtime package (pip install -e .)
   graph.py            # all graphs + checkpointer (single source of truth)
-  server.py           # FastAPI: /scope, /research, /research/{id}, /research/stream
+  server.py           # FastAPI: /scope, /research, /research/{id}, /research/stream, /settings
   cli.py              # deep-research CLI (scope / research / run)
   jobs.py             # in-memory job store
   log_config.py       # structured logging + timing helpers
-  models.py           # init_model(role) -> OpenRouter / legacy providers
+  models.py           # init_model(role) / get_model(role) -> OpenRouter / legacy providers
+  settings.py         # runtime tunables (models, caps, rate limit, Tavily); settings.json
   prompts.py          # all prompt templates
   utils.py            # async search + summarization tools
   state_*.py          # graph state schemas

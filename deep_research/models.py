@@ -42,12 +42,16 @@ _ROLE_ENV = {
 }
 
 
+def _normalize(name: str) -> str:
+    """Allow legacy "provider:model" form (e.g. "openai:gpt-4.1") — strip provider for OpenRouter."""
+    if os.getenv("OPENROUTER_API_KEY") and ":" in name and "/" not in name:
+        return name.split(":", 1)[1]
+    return name
+
+
 def model_name_for(role: str) -> str:
     name = os.getenv(_ROLE_ENV[role]) or os.getenv("MODEL") or _DEFAULTS[role]
-    # Allow legacy "provider:model" form in MODEL (e.g. "openai:gpt-4.1") — strip provider for OpenRouter.
-    if os.getenv("OPENROUTER_API_KEY") and ":" in name and "/" not in name:
-        name = name.split(":", 1)[1]
-    return name
+    return _normalize(name)
 
 
 def describe(model) -> str:
@@ -68,11 +72,17 @@ def short(text, n: int = 120) -> str:
     return s if len(s) <= n else s[:n] + "…"
 
 
-def init_model(role: str, **kwargs):
-    """Return a chat model for role. Routes via OpenRouter when configured."""
-    name = model_name_for(role)
-    if os.getenv("MODEL_TIMEOUT") and "request_timeout" not in kwargs:
-        kwargs["request_timeout"] = float(os.environ["MODEL_TIMEOUT"])
+def init_model(role: str, model: str | None = None, timeout: float | None = None, **kwargs):
+    """Return a chat model for role. Routes via OpenRouter when configured.
+
+    ``model`` / ``timeout`` override the env-derived defaults (used by get_model
+    so runtime Settings edits take effect without a restart).
+    """
+    name = _normalize(model) if model else model_name_for(role)
+    if timeout is None and os.getenv("MODEL_TIMEOUT"):
+        timeout = float(os.environ["MODEL_TIMEOUT"])
+    if timeout is not None and "request_timeout" not in kwargs:
+        kwargs["request_timeout"] = timeout
     key = os.getenv("OPENROUTER_API_KEY")
     if key:
         from langchain_openai import ChatOpenAI
@@ -107,3 +117,28 @@ def init_model(role: str, **kwargs):
     m = init_chat_model(model=legacy_name, **kwargs)
     log.info("model_init role=%s model=%s via=direct", role, legacy_name)
     return m
+
+
+# Model cache keyed by (role, model, timeout) so repeated per-call lookups reuse
+# the same client; a Settings edit changes the key and builds a fresh model.
+_CACHE: dict[tuple, object] = {}
+
+
+def get_model(role: str):
+    """Resolve the chat model for role from the current runtime Settings (cached)."""
+    from .settings import get_settings
+
+    s = get_settings()
+    name = getattr(s, f"{role}_model")
+    timeout = s.model_timeout
+    key = (role, name, timeout)
+    model = _CACHE.get(key)
+    if model is None:
+        model = init_model(role, model=name, timeout=timeout)
+        _CACHE[key] = model
+    return model
+
+
+def clear_cache() -> None:
+    """Drop cached clients (call when credentials change)."""
+    _CACHE.clear()

@@ -59,8 +59,10 @@ def test_format_empty_and_two_sources():
     assert "URL: https://a/1" in out and "SUMMARY:" in out
     assert "-" * 80 in out
 
-# T4
-async def test_tavily_search_end_to_end_mocked():
+# T4 — Tavily honors runtime settings (raw content -> per-page summaries).
+async def test_tavily_search_end_to_end_mocked(monkeypatch):
+    from deep_research.settings import get_settings
+    monkeypatch.setattr(get_settings(), "tavily_include_raw", True)
     canned = _resp([_r("https://a/1", "One", "c1", raw="raw1"),
                     _r("https://a/2", "Two", "c2", raw="")])
     with patch.object(utils.tavily_client, "search", new=AsyncMock(return_value=canned)) as s, \
@@ -74,8 +76,8 @@ async def test_tavily_search_end_to_end_mocked():
 # T5
 async def test_summarize_fallback_on_error():
     long_text = "x" * 1500
-    with patch.object(utils, "summarization_model") as m:
-        m.with_structured_output.side_effect = RuntimeError("boom")
+    with patch("deep_research.utils.get_model") as gm:
+        gm.return_value.with_structured_output.side_effect = RuntimeError("boom")
         out = await summarize_webpage_content(long_text)
     assert out.endswith("...") and len(out) <= 1005
 

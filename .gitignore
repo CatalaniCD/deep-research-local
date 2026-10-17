@@ -6,4 +6,6 @@ __pycache__/
 node_modules/
 ui/node_modules/
 .pytest_cache/
+settings.json
+.secrets.json
 *.md.html

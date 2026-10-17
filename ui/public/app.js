@@ -19,7 +19,7 @@ function scopeError(msg) {
 }
 
 function show(step) {
-  for (const s of ['scope', 'research', 'result']) {
+  for (const s of ['scope', 'research', 'result', 'settings']) {
     $('panel-' + s).classList.toggle('d-none', s !== step);
   }
   document.querySelectorAll('#steps .nav-link').forEach(b =>
@@ -108,3 +108,58 @@ $('btn-dl').onclick = () => {
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob); a.download = 'report.md'; a.click();
 };
+
+/* ---- Settings: models per node, limits, rate, Tavily ---- */
+const SETTINGS_FIELDS = [
+  'scope_model', 'research_model', 'supervisor_model', 'summary_model', 'compress_model', 'writer_model',
+  'model_timeout', 'max_tool_iterations', 'max_researcher_iterations', 'max_concurrent_researchers',
+  'rate_limit_rpm', 'tavily_max_results', 'tavily_search_depth', 'tavily_include_raw',
+];
+
+function fillSettings(s) {
+  for (const f of SETTINGS_FIELDS) {
+    const el = $(f);
+    if (!el) continue;
+    if (el.type === 'checkbox') el.checked = !!s[f];
+    else el.value = (s[f] === null || s[f] === undefined) ? '' : s[f];
+  }
+  const ks = $('openrouter-key-status');
+  if (ks) ks.textContent = s.openrouter_key_set ? 'A key is set (value hidden).' : 'No key set — set OPENROUTER_API_KEY or add one here.';
+}
+
+async function loadSettings() {
+  try {
+    const r = await fetch('/api/settings');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    fillSettings(await r.json());
+    $('settings-status').textContent = '';
+  } catch (e) {
+    $('settings-status').innerHTML = `<span class="text-danger">Load failed: ${e.message}</span>`;
+  }
+}
+
+$('btn-reload-settings').onclick = loadSettings;
+
+$('btn-save-settings').onclick = async () => {
+  const body = {};
+  for (const f of SETTINGS_FIELDS) {
+    const el = $(f);
+    if (!el) continue;
+    if (el.type === 'checkbox') body[f] = el.checked;
+    else if (el.type === 'number') body[f] = el.value === '' ? null : Number(el.value);
+    else body[f] = el.value;
+  }
+  const key = ($('openrouter_api_key').value || '').trim();
+  if (key) body.openrouter_api_key = key;
+  try {
+    const r = await fetch('/api/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    fillSettings(await r.json());
+    $('openrouter_api_key').value = '';
+    $('settings-status').innerHTML = '<span class="text-success">Saved — applies to the next run.</span>';
+  } catch (e) {
+    $('settings-status').innerHTML = `<span class="text-danger">Save failed: ${e.message}</span>`;
+  }
+};
+
+loadSettings();
