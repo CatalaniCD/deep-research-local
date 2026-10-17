@@ -44,6 +44,47 @@ MODEL=liquid/lfm-2.5-2.6b:free
 
 See `.env.example` for per-role model overrides, timeouts, and research caps.
 
+`.env` is listed in `.gitignore`, so your keys stay local. Only `.env.example`
+(placeholders) is committed — never put real keys there.
+
+## Getting API keys
+
+You need two keys. Both plans have a free tier; a small OpenRouter top-up removes
+the free-tier daily cap.
+
+### 1. Tavily (web search)
+
+1. Sign up at <https://app.tavily.com/>.
+2. Open your dashboard and copy an API key (**API Keys** section).
+3. Add it to `.env`:
+
+   ```bash
+   TAVILY_API_KEY=tvly-dev-...
+   ```
+
+Tavily's free plan includes **1,000 credits/month** (no card required), resetting
+on the 1st of each month. A *development* key allows up to 100 requests/min.
+
+### 2. OpenRouter (models)
+
+1. Sign up at <https://openrouter.ai/>.
+2. Create a key at <https://openrouter.ai/keys> and copy it (`sk-or-v1-...`).
+3. Add it to `.env`:
+
+   ```bash
+   OPENROUTER_API_KEY=sk-or-v1-...
+   ```
+
+**Raise the free-model daily limit:** by default, `:free` model variants are capped
+at **20 requests/min and 50 requests/day**. Topping up your account with **$10+**
+of credits (all-time purchases) raises the daily cap to **1,000 requests/day**
+(the per-minute limit stays at 20). Top up at <https://openrouter.ai/credits>;
+once you've purchased $10+ you keep the higher daily cap even if your balance later
+drops below $10.
+
+The default `RATE_LIMIT_RPM=18` in `.env.example` keeps this app just under the
+20/min free-model ceiling.
+
 ## Run
 
 One command starts the API (`:8000`) and UI (`:3000`), loading `.env` (or

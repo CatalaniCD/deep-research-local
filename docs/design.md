@@ -32,7 +32,8 @@ ui/public/app.js      # fetch + EventSource, markdown render (marked.js CDN)
 ui/public/style.css   # minimal Bootstrap overrides
 tests/test_search.py  # mocked search-result suite (see test.md)
 pyproject.toml        # fix packaging, deps: langgraph, langchain, tavily-python, fastapi, uvicorn
-.env.example          # TAVILY_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY
+.env.example          # placeholders only: TAVILY_API_KEY, OPENROUTER_API_KEY, MODEL, caps
+.env                  # local secrets (gitignored); copy from .env.example
 ```
 
 ## API contracts
