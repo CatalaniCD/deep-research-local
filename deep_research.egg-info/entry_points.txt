@@ -1,0 +1,2 @@
+[console_scripts]
+deep-research = deep_research.cli:main
