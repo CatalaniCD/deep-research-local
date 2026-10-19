@@ -1,0 +1,68 @@
+sequenceDiagram
+    autonumber
+    actor User
+    participant Browser as Browser (app.js)
+    participant Express as Express :3000 (/api proxy)
+    participant API as FastAPI :8000
+    participant Scope as Scope graph (MemorySaver)
+    participant Sup as Supervisor agent
+    participant Res as Researcher agent xN
+    participant TV as Tavily API
+    participant LLM as OpenRouter
+    participant Jobs as Job store
+
+    User->>Browser: type research question
+    Browser->>Express: POST /api/scope {query}
+    Express->>API: POST /scope (path rewritten)
+    API->>Scope: ainvoke(messages, thread_id=session_id)
+    Scope->>LLM: scope model (ClarifyWithUser)
+    LLM-->>Scope: need_clarification / proceed
+    alt needs clarification
+        Scope-->>API: AIMessage (question)
+        API-->>Express: {session_id, need_clarification: true, question}
+        Express-->>Browser: show question
+        User->>Browser: reply
+        Browser->>Express: POST /api/scope {query, session_id}
+        Note over Scope: history persisted, append turn only
+    end
+    Scope->>LLM: scope model (ResearchQuestion)
+    LLM-->>Scope: research_brief
+    Scope-->>API: {research_brief}
+    API-->>Browser: {need_clarification: false, research_brief}
+
+    User->>Browser: Start research
+    Browser->>Express: POST /api/research {research_brief}
+    Express->>API: POST /research
+    API->>Jobs: create_job (status=queued)
+    API->>Sup: asyncio.create_task(run_research)
+    API-->>Browser: {jobId}
+    Browser->>Express: GET /api/research/stream?jobId
+    Express->>API: GET /research/stream (SSE)
+    loop every 2s until terminal
+        API->>Jobs: get_job
+        Jobs-->>API: status
+        API-->>Browser: event: status
+    end
+
+    Note over Sup,Res: run_research -> supervisor_agent
+    loop supervisor iterations (<= MAX_RESEARCHER_ITERATIONS)
+        Sup->>LLM: supervisor model + tool calls
+        LLM-->>Sup: ConductResearch topics / think_tool / ResearchComplete
+        par parallel researcher fan-out (<= MAX_CONCURRENT_RESEARCHERS)
+            Sup->>Res: ainvoke(research_topic)
+            loop researcher iterations (<= MAX_TOOL_ITERATIONS)
+                Res->>LLM: research model + tools
+                LLM-->>Res: tool_calls
+                Res->>TV: tavily_search(query)
+                TV-->>Res: results + summaries
+            end
+            Res->>LLM: compress model -> compressed_research
+            Res-->>Sup: {compressed_research, raw_notes}
+        end
+    end
+    Sup-->>API: notes[]
+    API->>LLM: writer model (final_report_generation)
+    LLM-->>API: final report
+    API->>Jobs: update status=done, final_report
+    API-->>Browser: event: status done
+    Browser->>Browser: marked.js render markdown

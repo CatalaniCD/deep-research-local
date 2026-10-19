@@ -1,0 +1,54 @@
+flowchart TB
+    subgraph Client["Client — Browser :3000"]
+        UI["UI (ui/public/app.js)<br/>fetch + EventSource + marked.js"]
+    end
+
+    subgraph Edge["Edge — Express (ui/server.js)"]
+        Static["Static + EJS views"]
+        Proxy["/api/* proxy<br/>pathRewrite ^/api -> ''<br/>mounted before any body parser"]
+    end
+
+    subgraph API["API — FastAPI sidecar :8000 (deep_research/server.py)"]
+        Routes["REST routes + SSE<br/>/scope /research /research/stream /settings"]
+        JobStore[("In-memory job store<br/>deep_research/jobs.py")]
+    end
+
+    subgraph Core["Core — LangGraph pipeline (deep_research/graph.py)"]
+        Scope["Scope graph<br/>clarify_with_user -> write_research_brief"]
+        Sup["Supervisor agent<br/>plans topics + delegates"]
+        Res["Researcher agents<br/>search loop (parallel fan-out)"]
+        Writer["final_report_generation<br/>writer model"]
+    end
+
+    subgraph Ext["External systems + local state"]
+        LLM["OpenRouter LLM API<br/>models.py / get_model(role)"]
+        Tavily["Tavily Search API<br/>AsyncTavilyClient"]
+        Ckpt[("MemorySaver checkpointer<br/>keyed by thread_id = session_id")]
+        Files[("settings.json + .secrets.json<br/>gitignored")]
+    end
+
+    UI -->|"HTTP GET /"| Static
+    UI -->|"POST /api/scope, /api/research"| Proxy
+    UI -->|"GET /api/research/stream?jobId (SSE)"| Proxy
+    Proxy -->|"forwards to :8000"| Routes
+    Routes -->|"create/read/update job"| JobStore
+    Routes -->|"await scope_research.ainvoke"| Scope
+    Routes -->|"asyncio.create_task run_research"| Sup
+    Scope -->|"research_brief"| Sup
+    Sup -->|"ConductResearch fan-out"| Res
+    Res -->|"compressed notes"| Sup
+    Sup -->|"notes[]"| Writer
+    Scope -->|"thread state"| Ckpt
+    Scope -->|"scope model"| LLM
+    Sup -->|"supervisor model"| LLM
+    Res -->|"research + compress models"| LLM
+    Writer -->|"writer model"| LLM
+    Res -->|"tavily_search"| Tavily
+    Routes -->|"GET/PUT settings"| Files
+    Scope -.->|"reads at call time"| Files
+    Sup -.->|"reads at call time"| Files
+    Res -.->|"reads at call time"| Files
+    Writer -.->|"reads at call time"| Files
+
+    classDef store fill:#eef,stroke:#557;
+    class JobStore,Ckpt,Files store;

@@ -19,6 +19,267 @@ Browser (:3000, Bootstrap 5)
 All nodes are async and all network I/O uses `AsyncTavilyClient` + `ainvoke`,
 so the event loop is never blocked.
 
+## Architecture diagrams
+
+Mermaid sources and rendered PNGs live in [`docs/architecture/`](docs/architecture/).
+
+### 1. System context — who talks to whom
+
+![System context](docs/architecture/01-system-context.png)
+
+<details>
+<summary>Mermaid source</summary>
+
+```mermaid
+flowchart TB
+    subgraph Client["Client — Browser :3000"]
+        UI["UI (ui/public/app.js)<br/>fetch + EventSource + marked.js"]
+    end
+
+    subgraph Edge["Edge — Express (ui/server.js)"]
+        Static["Static + EJS views"]
+        Proxy["/api/* proxy<br/>pathRewrite ^/api -> ''<br/>mounted before any body parser"]
+    end
+
+    subgraph API["API — FastAPI sidecar :8000 (deep_research/server.py)"]
+        Routes["REST routes + SSE<br/>/scope /research /research/stream /settings"]
+        JobStore[("In-memory job store<br/>deep_research/jobs.py")]
+    end
+
+    subgraph Core["Core — LangGraph pipeline (deep_research/graph.py)"]
+        Scope["Scope graph<br/>clarify_with_user -> write_research_brief"]
+        Sup["Supervisor agent<br/>plans topics + delegates"]
+        Res["Researcher agents<br/>search loop (parallel fan-out)"]
+        Writer["final_report_generation<br/>writer model"]
+    end
+
+    subgraph Ext["External systems + local state"]
+        LLM["OpenRouter LLM API<br/>models.py / get_model(role)"]
+        Tavily["Tavily Search API<br/>AsyncTavilyClient"]
+        Ckpt[("MemorySaver checkpointer<br/>keyed by thread_id = session_id")]
+        Files[("settings.json + .secrets.json<br/>gitignored")]
+    end
+
+    UI -->|"HTTP GET /"| Static
+    UI -->|"POST /api/scope, /api/research"| Proxy
+    UI -->|"GET /api/research/stream?jobId (SSE)"| Proxy
+    Proxy -->|"forwards to :8000"| Routes
+    Routes -->|"create/read/update job"| JobStore
+    Routes -->|"await scope_research.ainvoke"| Scope
+    Routes -->|"asyncio.create_task run_research"| Sup
+    Scope -->|"research_brief"| Sup
+    Sup -->|"ConductResearch fan-out"| Res
+    Res -->|"compressed notes"| Sup
+    Sup -->|"notes[]"| Writer
+    Scope -->|"thread state"| Ckpt
+    Scope -->|"scope model"| LLM
+    Sup -->|"supervisor model"| LLM
+    Res -->|"research + compress models"| LLM
+    Writer -->|"writer model"| LLM
+    Res -->|"tavily_search"| Tavily
+    Routes -->|"GET/PUT settings"| Files
+    Scope -.->|"reads at call time"| Files
+    Sup -.->|"reads at call time"| Files
+    Res -.->|"reads at call time"| Files
+    Writer -.->|"reads at call time"| Files
+
+    classDef store fill:#eef,stroke:#557;
+    class JobStore,Ckpt,Files store;
+```
+
+</details>
+
+### 2. End-to-end research sequence
+
+![Research sequence](docs/architecture/02-research-sequence.png)
+
+<details>
+<summary>Mermaid source</summary>
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User
+    participant Browser as Browser (app.js)
+    participant Express as Express :3000 (/api proxy)
+    participant API as FastAPI :8000
+    participant Scope as Scope graph (MemorySaver)
+    participant Sup as Supervisor agent
+    participant Res as Researcher agent xN
+    participant TV as Tavily API
+    participant LLM as OpenRouter
+    participant Jobs as Job store
+
+    User->>Browser: type research question
+    Browser->>Express: POST /api/scope {query}
+    Express->>API: POST /scope (path rewritten)
+    API->>Scope: ainvoke(messages, thread_id=session_id)
+    Scope->>LLM: scope model (ClarifyWithUser)
+    LLM-->>Scope: need_clarification / proceed
+    alt needs clarification
+        Scope-->>API: AIMessage (question)
+        API-->>Express: {session_id, need_clarification: true, question}
+        Express-->>Browser: show question
+        User->>Browser: reply
+        Browser->>Express: POST /api/scope {query, session_id}
+        Note over Scope: history persisted, append turn only
+    end
+    Scope->>LLM: scope model (ResearchQuestion)
+    LLM-->>Scope: research_brief
+    Scope-->>API: {research_brief}
+    API-->>Browser: {need_clarification: false, research_brief}
+
+    User->>Browser: Start research
+    Browser->>Express: POST /api/research {research_brief}
+    Express->>API: POST /research
+    API->>Jobs: create_job (status=queued)
+    API->>Sup: asyncio.create_task(run_research)
+    API-->>Browser: {jobId}
+    Browser->>Express: GET /api/research/stream?jobId
+    Express->>API: GET /research/stream (SSE)
+    loop every 2s until terminal
+        API->>Jobs: get_job
+        Jobs-->>API: status
+        API-->>Browser: event: status
+    end
+
+    Note over Sup,Res: run_research -> supervisor_agent
+    loop supervisor iterations (<= MAX_RESEARCHER_ITERATIONS)
+        Sup->>LLM: supervisor model + tool calls
+        LLM-->>Sup: ConductResearch topics / think_tool / ResearchComplete
+        par parallel researcher fan-out (<= MAX_CONCURRENT_RESEARCHERS)
+            Sup->>Res: ainvoke(research_topic)
+            loop researcher iterations (<= MAX_TOOL_ITERATIONS)
+                Res->>LLM: research model + tools
+                LLM-->>Res: tool_calls
+                Res->>TV: tavily_search(query)
+                TV-->>Res: results + summaries
+            end
+            Res->>LLM: compress model -> compressed_research
+            Res-->>Sup: {compressed_research, raw_notes}
+        end
+    end
+    Sup-->>API: notes[]
+    API->>LLM: writer model (final_report_generation)
+    LLM-->>API: final report
+    API->>Jobs: update status=done, final_report
+    API-->>Browser: event: status done
+    Browser->>Browser: marked.js render markdown
+```
+
+</details>
+
+### 3. LangGraph topology
+
+![LangGraph topology](docs/architecture/03-graph-topology.png)
+
+<details>
+<summary>Mermaid source</summary>
+
+```mermaid
+flowchart TB
+    subgraph Scope["Scope graph — build_scope_graph (MemorySaver checkpointer)"]
+        direction LR
+        S0([START]) --> CWU["clarify_with_user<br/>scope model -> ClarifyWithUser"]
+        CWU -->|need_clarification| SE([END])
+        CWU -->|proceed| WRB["write_research_brief<br/>scope model -> ResearchQuestion"]
+        WRB --> SE
+    end
+
+    subgraph Researcher["Researcher graph — build_researcher_agent (one sub-topic)"]
+        direction LR
+        R0([START]) --> LC["llm_call<br/>research model + tools"]
+        LC -->|should_continue: tool_calls| TN["tool_node<br/>tavily_search + think_tool (parallel)"]
+        LC -->|no tool_calls OR max_tool_iterations| CR["compress_research<br/>compress model"]
+        TN --> LC
+        CR --> RE([END])
+    end
+
+    subgraph Supervisor["Supervisor graph — build_supervisor_agent"]
+        direction LR
+        P0([START]) --> SP["supervisor<br/>supervisor model -> ConductResearch / ResearchComplete"]
+        SP -->|Command goto| ST["supervisor_tools"]
+        ST -->|reflections + fan-out researcher_agent| SP
+        ST -->|complete OR max iterations OR no calls| PE([END])
+    end
+
+    subgraph Full["Full graph — build_full_graph (compiled as `agent`)"]
+        direction LR
+        F0([START]) --> F1["clarify_with_user"]
+        F1 -->|proceed| F2["write_research_brief"]
+        F1 -->|need_clarification| FE([END])
+        F2 --> F3["supervisor_subgraph"]
+        F3 --> F4["final_report_generation<br/>writer model"]
+        F4 --> FE
+    end
+
+    ST -.->|"ainvoke in parallel per topic"| Researcher
+    Full -.->|"supervisor_subgraph IS the compiled Supervisor graph"| Supervisor
+```
+
+</details>
+
+### 4. Job lifecycle
+
+![Job lifecycle](docs/architecture/04-job-lifecycle.png)
+
+<details>
+<summary>Mermaid source</summary>
+
+```mermaid
+stateDiagram-v2
+    [*] --> queued: POST /research -> create_job()
+    queued --> running: asyncio task _run_research() starts
+    running --> done: run_research() returns final_report
+    running --> error: exception in pipeline
+    queued --> cancelled: DELETE /research/{id} before task runs
+    running --> cancelled: DELETE /research/{id} -> task.cancel()
+    done --> [*]
+    error --> [*]
+    cancelled --> [*]
+
+    note right of running
+        GET /research/stream polls the
+        job store every 2s (SSE status events)
+    end note
+
+    note right of done
+        Stream emits the terminal status
+        then closes the connection
+    end note
+```
+
+</details>
+
+### 5. Settings precedence and secrets
+
+![Settings precedence](docs/architecture/05-settings-precedence.png)
+
+<details>
+<summary>Mermaid source</summary>
+
+```mermaid
+flowchart TD
+    A["Builtin defaults<br/>(Settings dataclass)"] --> B["Environment<br/>.env / .dev.vars"]
+    B --> C["settings.json<br/>(persisted, gitignored)"]
+    C --> D["Runtime PUT /settings<br/>(live UI edits)"]
+    D --> E["get_settings()<br/>read at call time in graph.py / utils.py"]
+
+    E --> F["models.get_model(role)<br/>cached by (role, model, timeout)"]
+    E --> G["limiter.set_rpm(rate_limit_rpm)<br/>shared AsyncRateLimiter"]
+    E --> H["Tavily params<br/>max_results / depth / include_raw"]
+    E --> I["Caps<br/>max_tool / max_researcher / max_concurrent"]
+
+    K["PUT /settings {openrouter_api_key}"] --> L[(".secrets.json<br/>gitignored")]
+    L --> M["OPENROUTER_API_KEY env<br/>+ models.clear_cache()"]
+    L -.->|"never returned or logged"| N["GET /settings exposes<br/>openrouter_key_set: bool only"]
+
+    classDef secret fill:#fee,stroke:#a55;
+    class L,M,N secret;
+```
+
+</details>
+
 ## Requirements
 
 - Python 3.11+
@@ -186,6 +447,7 @@ deep_research/        # runtime package (pip install -e .)
 samples/              # unused tutorial material (legacy graphs + notebooks)
 ui/                   # Express + Bootstrap UI (proxies /api/* to :8000)
 docs/                 # intent, specs, plan, design, test artifacts
+  architecture/       # Mermaid diagram sources (.mmd) + rendered PNGs
 tests/                # mocked-only search-result suite
 ```
 

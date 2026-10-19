@@ -1,0 +1,17 @@
+flowchart TD
+    A["Builtin defaults<br/>(Settings dataclass)"] --> B["Environment<br/>.env / .dev.vars"]
+    B --> C["settings.json<br/>(persisted, gitignored)"]
+    C --> D["Runtime PUT /settings<br/>(live UI edits)"]
+    D --> E["get_settings()<br/>read at call time in graph.py / utils.py"]
+
+    E --> F["models.get_model(role)<br/>cached by (role, model, timeout)"]
+    E --> G["limiter.set_rpm(rate_limit_rpm)<br/>shared AsyncRateLimiter"]
+    E --> H["Tavily params<br/>max_results / depth / include_raw"]
+    E --> I["Caps<br/>max_tool / max_researcher / max_concurrent"]
+
+    K["PUT /settings {openrouter_api_key}"] --> L[(".secrets.json<br/>gitignored")]
+    L --> M["OPENROUTER_API_KEY env<br/>+ models.clear_cache()"]
+    L -.->|"never returned or logged"| N["GET /settings exposes<br/>openrouter_key_set: bool only"]
+
+    classDef secret fill:#fee,stroke:#a55;
+    class L,M,N secret;

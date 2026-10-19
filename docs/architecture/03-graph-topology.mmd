@@ -1,0 +1,38 @@
+flowchart TB
+    subgraph Scope["Scope graph — build_scope_graph (MemorySaver checkpointer)"]
+        direction LR
+        S0([START]) --> CWU["clarify_with_user<br/>scope model -> ClarifyWithUser"]
+        CWU -->|need_clarification| SE([END])
+        CWU -->|proceed| WRB["write_research_brief<br/>scope model -> ResearchQuestion"]
+        WRB --> SE
+    end
+
+    subgraph Researcher["Researcher graph — build_researcher_agent (one sub-topic)"]
+        direction LR
+        R0([START]) --> LC["llm_call<br/>research model + tools"]
+        LC -->|should_continue: tool_calls| TN["tool_node<br/>tavily_search + think_tool (parallel)"]
+        LC -->|no tool_calls OR max_tool_iterations| CR["compress_research<br/>compress model"]
+        TN --> LC
+        CR --> RE([END])
+    end
+
+    subgraph Supervisor["Supervisor graph — build_supervisor_agent"]
+        direction LR
+        P0([START]) --> SP["supervisor<br/>supervisor model -> ConductResearch / ResearchComplete"]
+        SP -->|Command goto| ST["supervisor_tools"]
+        ST -->|reflections + fan-out researcher_agent| SP
+        ST -->|complete OR max iterations OR no calls| PE([END])
+    end
+
+    subgraph Full["Full graph — build_full_graph (compiled as `agent`)"]
+        direction LR
+        F0([START]) --> F1["clarify_with_user"]
+        F1 -->|proceed| F2["write_research_brief"]
+        F1 -->|need_clarification| FE([END])
+        F2 --> F3["supervisor_subgraph"]
+        F3 --> F4["final_report_generation<br/>writer model"]
+        F4 --> FE
+    end
+
+    ST -.->|"ainvoke in parallel per topic"| Researcher
+    Full -.->|"supervisor_subgraph IS the compiled Supervisor graph"| Supervisor

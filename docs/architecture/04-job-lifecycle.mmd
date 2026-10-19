@@ -1,0 +1,20 @@
+stateDiagram-v2
+    [*] --> queued: POST /research -> create_job()
+    queued --> running: asyncio task _run_research() starts
+    running --> done: run_research() returns final_report
+    running --> error: exception in pipeline
+    queued --> cancelled: DELETE /research/{id} before task runs
+    running --> cancelled: DELETE /research/{id} -> task.cancel()
+    done --> [*]
+    error --> [*]
+    cancelled --> [*]
+
+    note right of running
+        GET /research/stream polls the
+        job store every 2s (SSE status events)
+    end note
+
+    note right of done
+        Stream emits the terminal status
+        then closes the connection
+    end note
